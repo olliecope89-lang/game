@@ -88,6 +88,44 @@ static int init_video(void)
     return 0;
 }
 
+/* Stick drift handling.
+ *  1. For the first ~0.75 s the resting position of the left stick is measured; if it sat
+ *     still (not being pushed) that reading becomes the new centre, so a worn stick that rests
+ *     off-centre no longer walks the stickman by itself.
+ *  2. A generous dead zone, and everything past it is rescaled to 0..1 so there is no jump
+ *     when the stick leaves the dead zone.
+ * The D-pad is not affected by any of this and always works as a clean left/right. */
+#define STICK_DEADZONE 0.38f
+#define CAL_FRAMES     45
+
+static float stick_centre = 128.0f;
+static int   cal_frames = 0, cal_min = 255, cal_max = 0;
+static float cal_sum = 0;
+
+static float stick_axis(int raw)
+{
+    if (cal_frames < CAL_FRAMES) {
+        if (raw < cal_min) cal_min = raw;
+        if (raw > cal_max) cal_max = raw;
+        cal_sum += (float)raw;
+        if (++cal_frames == CAL_FRAMES) {
+            float avg = cal_sum / (float)CAL_FRAMES;
+            /* accept only if the stick was held still and is plausibly resting */
+            if (cal_max - cal_min <= 8 && avg > 128.0f - 70.0f && avg < 128.0f + 70.0f)
+                stick_centre = avg;
+        }
+    }
+    /* each side is scaled by its own travel, so full push still reaches 1.0 even if the
+     * centre was shifted by calibration */
+    float d = (float)raw - stick_centre;
+    float a = d >= 0 ? d / (255.0f - stick_centre) : d / stick_centre;
+    float m = a < 0 ? -a : a;
+    if (m < STICK_DEADZONE) return 0;
+    m = (m - STICK_DEADZONE) / (1.0f - STICK_DEADZONE);
+    if (m > 1.0f) m = 1.0f;
+    return a < 0 ? -m : m;
+}
+
 static void read_pad(Input *in)
 {
     padInfo info;
@@ -98,8 +136,7 @@ static void read_pad(Input *in)
         if (!info.status[i]) continue;
         ioPadGetData(i, &data);
 
-        float lx = ((int)data.ANA_L_H - 128) / 128.0f; /* left stick, 0..255 */
-        if (lx > -0.25f && lx < 0.25f) lx = 0;
+        float lx = stick_axis((int)data.ANA_L_H); /* left stick, 0..255 */
         float dx = 0;
         if (data.BTN_LEFT)  dx -= 1;
         if (data.BTN_RIGHT) dx += 1;
