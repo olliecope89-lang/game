@@ -2,24 +2,39 @@ name: Build Floppy Fighters PKG
 
 # Builds the PS3 toolchain + PSL1GHT, then compiles the game and packages it.
 # First run takes roughly an hour; the toolchain is cached, so later runs are quick.
-# Start it from the Actions tab ("Run workflow") or by pushing to the repo.
+# Results are also committed to branches so they can be fetched with plain git:
+#   branch "pkg"      -> floppy-fighters.pkg (+ .gnpdrm.pkg, .self) when the build succeeds
+#   branch "buildlog" -> tail of the build logs when something fails
 on:
   workflow_dispatch:
   push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-pkg
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
     env:
       PS3DEV: ${{ github.workspace }}/ps3dev
       PSL1GHT: ${{ github.workspace }}/ps3dev
       NO_SAVANNAH: "1"
+      LOGDIR: ${{ github.workspace }}/logs
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build requirements
         run: |
+          mkdir -p "$LOGDIR"
           sudo apt-get update
           sudo apt-get -y install autoconf automake bison flex gcc libelf-dev make texinfo \
             libncurses5-dev patch python3 python-is-python3 python3-dev python3-setuptools \
@@ -31,7 +46,7 @@ jobs:
 
       - name: Restore cached toolchain
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ps3dev
           key: ps3dev-toolchain-${{ steps.tc.outputs.sha }}
@@ -39,19 +54,30 @@ jobs:
       - name: Build PS3 toolchain and PSL1GHT (first run only)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
+          mkdir -p "$LOGDIR"
           export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
           git clone --depth 1 https://github.com/ps3dev/ps3toolchain "$RUNNER_TEMP/ps3toolchain"
           cd "$RUNNER_TEMP/ps3toolchain"
           mkdir -p build
-          (cd build && ../download.sh)
+          (cd build && ../download.sh) 2>&1 | tee "$LOGDIR/toolchain.log"
           # 001/002 PPU binutils+gcc+newlib, 004 ppu-* symlinks, 005/006 SPU binutils+gcc+newlib, 008 PSL1GHT SDK
-          for step in 001 002 004 005 006 008; do ./toolchain.sh $step; done
+          for step in 001 002 004 005 006 008; do
+            ./toolchain.sh $step 2>&1 | tee -a "$LOGDIR/toolchain.log"
+          done
+
+      # Saved right away so a compile error in the game never throws away the toolchain build.
+      - name: Save toolchain cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ps3dev
+          key: ps3dev-toolchain-${{ steps.tc.outputs.sha }}
 
       - name: Build floppy-fighters.pkg
         run: |
           export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
-          make pkg
-          ls -la *.pkg *.self
+          make pkg 2>&1 | tee "$LOGDIR/make.log"
+          ls -la floppy-fighters*.pkg floppy-fighters.self
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,3 +86,31 @@ jobs:
             floppy-fighters.pkg
             floppy-fighters.gnpdrm.pkg
             floppy-fighters.self
+
+      - name: Publish the package to branch "pkg"
+        run: |
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          cp floppy-fighters.pkg floppy-fighters.gnpdrm.pkg floppy-fighters.self "$OUT/"
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git checkout --orphan pkg
+          git rm -rf --quiet . || true
+          cp "$OUT"/* .
+          git add -f floppy-fighters.pkg floppy-fighters.gnpdrm.pkg floppy-fighters.self
+          git commit -q -m "Build of ${GITHUB_SHA::8}"
+          git push --force origin pkg
+
+      - name: Publish logs to branch "buildlog" on failure
+        if: failure()
+        run: |
+          OUT="$RUNNER_TEMP/outlog"; mkdir -p "$OUT"
+          for f in "$LOGDIR"/*.log; do [ -f "$f" ] && tail -n 400 "$f" > "$OUT/$(basename "$f")"; done
+          echo "failed at ${GITHUB_SHA::8}" > "$OUT/STATUS.txt"
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git checkout --orphan buildlog
+          git rm -rf --quiet . || true
+          cp "$OUT"/* .
+          git add -f .
+          git commit -q -m "Build log for ${GITHUB_SHA::8}"
+          git push --force origin buildlog
