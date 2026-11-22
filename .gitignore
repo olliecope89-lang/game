@@ -1,0 +1,9 @@
+build/
+*.elf
+*.self
+*.pkg
+*.map
+desktop/test
+desktop/test_dbg
+out/
+*.ppm
