@@ -1,0 +1,135 @@
+/* Two-game launcher menu: logic + software rendering. Portable C, no PS3 calls. */
+#include "menu.h"
+#include <string.h>
+
+static const char *NAMES[MENU_ITEMS] = { "RAGDOLL BLAST YARD", "FLOPPY FIGHTERS" };
+static const char *SUBS[MENU_ITEMS]  = { "PS3 HOMEBREW EDITION", "STICKMAN BRAWLER" };
+static const char *FILES[MENU_ITEMS] = { "RAGDOLL.SELF", "FLOPPY.SELF" };
+
+const char *menu_target_file(int index)
+{
+    return (index >= 0 && index < MENU_ITEMS) ? FILES[index] : FILES[0];
+}
+
+void menu_init(Menu *m) { memset(m, 0, sizeof(*m)); m->launch = -1; }
+
+void menu_fail(Menu *m) { m->launch = -1; m->msg_t = 4.0f; }
+
+void menu_update(Menu *m, unsigned pressed, float dt)
+{
+    m->t += dt;
+    if (m->msg_t > 0) m->msg_t -= dt;
+    if (m->launch >= 0) return;
+    if ((pressed & MENU_BTN_UP)   && m->sel > 0)              m->sel--;
+    if ((pressed & MENU_BTN_DOWN) && m->sel < MENU_ITEMS - 1) m->sel++;
+    if (pressed & MENU_BTN_OK) m->launch = m->sel;
+}
+
+/* ---- drawing helpers; coordinates are in a fixed 1280x720 space, scaled to the buffer ---- */
+static uint32_t *g_fb; static int g_w, g_h, g_pitch; static float g_sx, g_sy;
+
+static void rect(float x0, float y0, float x1, float y1, uint32_t c, float a)
+{
+    int ix0 = (int)(x0 * g_sx), iy0 = (int)(y0 * g_sy), ix1 = (int)(x1 * g_sx), iy1 = (int)(y1 * g_sy);
+    if (ix0 < 0) ix0 = 0;
+    if (iy0 < 0) iy0 = 0;
+    if (ix1 > g_w) ix1 = g_w;
+    if (iy1 > g_h) iy1 = g_h;
+    int ia = (int)(a * 256.0f);
+    int cr = (c >> 16) & 255, cg = (c >> 8) & 255, cb = c & 255;
+    for (int y = iy0; y < iy1; y++) {
+        uint32_t *row = g_fb + (size_t)y * g_pitch;
+        for (int x = ix0; x < ix1; x++) {
+            if (ia >= 256) { row[x] = c; continue; }
+            uint32_t d = row[x];
+            int r = (int)((d >> 16) & 255), g = (int)((d >> 8) & 255), b = (int)(d & 255);
+            r += ((cr - r) * ia) >> 8; g += ((cg - g) * ia) >> 8; b += ((cb - b) * ia) >> 8;
+            row[x] = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+        }
+    }
+}
+
+static const uint8_t FONT[64][5] = {
+    {0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x5F,0x00,0x00},{0x00,0x07,0x00,0x07,0x00},{0x14,0x7F,0x14,0x7F,0x14},
+    {0x24,0x2A,0x7F,0x2A,0x12},{0x23,0x13,0x08,0x64,0x62},{0x36,0x49,0x56,0x20,0x50},{0x00,0x08,0x07,0x03,0x00},
+    {0x00,0x1C,0x22,0x41,0x00},{0x00,0x41,0x22,0x1C,0x00},{0x14,0x08,0x3E,0x08,0x14},{0x08,0x08,0x3E,0x08,0x08},
+    {0x00,0x50,0x30,0x00,0x00},{0x08,0x08,0x08,0x08,0x08},{0x00,0x60,0x60,0x00,0x00},{0x20,0x10,0x08,0x04,0x02},
+    {0x3E,0x51,0x49,0x45,0x3E},{0x00,0x42,0x7F,0x40,0x00},{0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4B,0x31},
+    {0x18,0x14,0x12,0x7F,0x10},{0x27,0x45,0x45,0x45,0x39},{0x3C,0x4A,0x49,0x49,0x30},{0x01,0x71,0x09,0x05,0x03},
+    {0x36,0x49,0x49,0x49,0x36},{0x06,0x49,0x49,0x29,0x1E},{0x00,0x36,0x36,0x00,0x00},{0x00,0x56,0x36,0x00,0x00},
+    {0x08,0x14,0x22,0x41,0x00},{0x14,0x14,0x14,0x14,0x14},{0x00,0x41,0x22,0x14,0x08},{0x02,0x01,0x51,0x09,0x06},
+    {0x32,0x49,0x79,0x41,0x3E},{0x7E,0x11,0x11,0x11,0x7E},{0x7F,0x49,0x49,0x49,0x36},{0x3E,0x41,0x41,0x41,0x22},
+    {0x7F,0x41,0x41,0x22,0x1C},{0x7F,0x49,0x49,0x49,0x41},{0x7F,0x09,0x09,0x09,0x01},{0x3E,0x41,0x49,0x49,0x7A},
+    {0x7F,0x08,0x08,0x08,0x7F},{0x00,0x41,0x7F,0x41,0x00},{0x20,0x40,0x41,0x3F,0x01},{0x7F,0x08,0x14,0x22,0x41},
+    {0x7F,0x40,0x40,0x40,0x40},{0x7F,0x02,0x0C,0x02,0x7F},{0x7F,0x04,0x08,0x10,0x7F},{0x3E,0x41,0x41,0x41,0x3E},
+    {0x7F,0x09,0x09,0x09,0x06},{0x3E,0x41,0x51,0x21,0x5E},{0x7F,0x09,0x19,0x29,0x46},{0x46,0x49,0x49,0x49,0x31},
+    {0x01,0x01,0x7F,0x01,0x01},{0x3F,0x40,0x40,0x40,0x3F},{0x1F,0x20,0x40,0x20,0x1F},{0x3F,0x40,0x38,0x40,0x3F},
+    {0x63,0x14,0x08,0x14,0x63},{0x07,0x08,0x70,0x08,0x07},{0x61,0x51,0x49,0x45,0x43},{0x00,0x7F,0x41,0x41,0x00},
+    {0x02,0x04,0x08,0x10,0x20},{0x00,0x41,0x41,0x7F,0x00},{0x04,0x02,0x01,0x02,0x04},{0x40,0x40,0x40,0x40,0x40},
+};
+
+static int text_w(const char *s, int sc) { int n = 0; while (s[n]) n++; return n ? n * 6 * sc - sc : 0; }
+
+static void text(float x, float y, const char *s, int sc, uint32_t c, float alpha)
+{
+    for (; *s; s++, x += 6 * sc) {
+        int ch = (unsigned char)*s;
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        if (ch < 32 || ch > 95) ch = '?';
+        const uint8_t *g = FONT[ch - 32];
+        for (int col = 0; col < 5; col++)
+            for (int row = 0; row < 7; row++)
+                if (g[col] & (1 << row))
+                    rect(x + col * sc, y + row * sc, x + (col + 1) * sc, y + (row + 1) * sc, c, alpha);
+    }
+}
+
+static void text_c(float cx, float y, const char *s, int sc, uint32_t c, float alpha)
+{
+    float x = cx - text_w(s, sc) * 0.5f;
+    text(x + sc, y + sc, s, sc, 0x05080F, alpha * 0.6f); /* shadow */
+    text(x, y, s, sc, c, alpha);
+}
+
+static void frame(float x0, float y0, float x1, float y1, float th, uint32_t c, float a)
+{
+    rect(x0, y0, x1, y0 + th, c, a); rect(x0, y1 - th, x1, y1, c, a);
+    rect(x0, y0, x0 + th, y1, c, a); rect(x1 - th, y0, x1, y1, c, a);
+}
+
+void menu_render(const Menu *m, uint32_t *fb, int w, int h, int pitch_px)
+{
+    g_fb = fb; g_w = w; g_h = h; g_pitch = pitch_px;
+    g_sx = (float)w / (float)MENU_W; g_sy = (float)h / (float)MENU_H_PX;
+
+    /* background: vertical gradient in 24 bands + a faint floor line */
+    for (int i = 0; i < 24; i++) {
+        float f = i / 23.0f;
+        int r = (int)(14 + 10 * f), g = (int)(20 + 24 * f), b = (int)(40 + 30 * f);
+        rect(0, i * (720 / 24.0f), 1280, (i + 1) * (720 / 24.0f) + 1, ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b, 1.0f);
+    }
+    rect(0, 640, 1280, 644, 0x3A4A6A, 1.0f);
+
+    text_c(640, 70, "CHOOSE A GAME", 7, 0xF2F5FF, 1.0f);
+
+    for (int i = 0; i < MENU_ITEMS; i++) {
+        float y0 = 230.0f + i * 170.0f, y1 = y0 + 140.0f, x0 = 190, x1 = 1090;
+        int on = (m->sel == i);
+        float pulse = on ? 0.5f + 0.5f * (((int)(m->t * 6.0f) & 1) ? 0.85f : 1.0f) : 0.0f;
+        rect(x0, y0, x1, y1, on ? 0x27406E : 0x161F34, 1.0f);
+        frame(x0, y0, x1, y1, on ? 5 : 2, on ? 0xFFD35A : 0x34466B, on ? pulse : 1.0f);
+        if (on) rect(x0 + 5, y0 + 5, x0 + 22, y1 - 5, 0xFFD35A, 1.0f);
+        text(x0 + 60, y0 + 28, NAMES[i], 6, on ? 0xFFFFFF : 0x9FB0D0, 1.0f);
+        text(x0 + 60, y0 + 92, SUBS[i], 3, on ? 0xFFD35A : 0x6C7EA3, 1.0f);
+    }
+
+    text_c(640, 664, "UP/DOWN  CHOOSE     X  PLAY     PS BUTTON  QUIT", 3, 0xB7C4E0, 1.0f);
+
+    if (m->msg_t > 0)
+        text_c(640, 190, "COULD NOT START THE GAME - FILE MISSING", 3, 0xFF6A6A, 1.0f);
+
+    if (m->launch >= 0) {
+        rect(0, 0, 1280, 720, 0x05080F, 0.78f);
+        text_c(640, 330, "LOADING...", 8, 0xFFFFFF, 1.0f);
+    }
+}

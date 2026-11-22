@@ -79,6 +79,20 @@ jobs:
           make pkg 2>&1 | tee "$LOGDIR/make.log"
           ls -la floppy-fighters*.pkg floppy-fighters.self
 
+      # Parts for the one-package "both games" build. The launcher and Floppy Fighters are signed
+      # with the Ragdoll package's content id (UP0001-RAGDOLL01_00-...), because they get installed
+      # under that id. The final package is assembled off-line together with the Ragdoll game, so
+      # that game never has to be uploaded here.
+      - name: Build launcher and merged-package parts
+        run: |
+          export PATH="$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin"
+          CID=UP0001-RAGDOLL01_00-0000000000000000
+          make -C launcher 2>&1 | tee "$LOGDIR/launcher.log"
+          mkdir -p parts
+          make_self_npdrm launcher/build/launcher.elf parts/launcher.npdrm.self "$CID" >> /dev/null
+          make_self_npdrm build/floppy-fighters.elf parts/floppy-fighters.npdrm.self "$CID" >> /dev/null
+          ls -la parts
+
       - uses: actions/upload-artifact@v4
         with:
           name: floppy-fighters-pkg
@@ -86,17 +100,20 @@ jobs:
             floppy-fighters.pkg
             floppy-fighters.gnpdrm.pkg
             floppy-fighters.self
+            parts/launcher.npdrm.self
+            parts/floppy-fighters.npdrm.self
 
       - name: Publish the package to branch "pkg"
         run: |
-          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT/parts"
           cp floppy-fighters.pkg floppy-fighters.gnpdrm.pkg floppy-fighters.self "$OUT/"
+          cp parts/launcher.npdrm.self parts/floppy-fighters.npdrm.self "$OUT/parts/"
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git checkout --orphan pkg
           git rm -rf --quiet . || true
-          cp "$OUT"/* .
-          git add -f floppy-fighters.pkg floppy-fighters.gnpdrm.pkg floppy-fighters.self
+          cp -r "$OUT"/* .
+          git add -f floppy-fighters.pkg floppy-fighters.gnpdrm.pkg floppy-fighters.self parts
           git commit -q -m "Build of ${GITHUB_SHA::8}"
           git push --force origin pkg
 
